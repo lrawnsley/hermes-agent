@@ -2368,15 +2368,36 @@ class APIServerAdapter(BasePlatformAdapter):
                 except ImportError:
                     pass
 
-            # Port conflict detection — fail fast if port is already in use
-            try:
-                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                    _s.settimeout(1)
-                    _s.connect(('127.0.0.1', self._port))
-                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+            # Port conflict detection — wait briefly if port is still in use.
+            # On gateway restart (especially with --replace), the old process may
+            # have exited but the TCP socket may still be in TIME_WAIT, taking
+            # up to 60s to fully release.  Retry for up to 15s before giving up.
+            _port_waited = 0
+            _port_max_wait = 15.0
+            while _port_waited < _port_max_wait:
+                try:
+                    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                        _s.settimeout(1)
+                        _s.connect(('127.0.0.1', self._port))
+                    # Port is still occupied — wait and retry
+                    if _port_waited == 0:
+                        logger.info(
+                            '[%s] Port %d still in use (likely TIME_WAIT from previous gateway), waiting up to %.0fs...',
+                            self.name, self._port, _port_max_wait,
+                        )
+                    import time as _time
+                    _time.sleep(2.0)
+                    _port_waited += 2.0
+                    continue
+                except (ConnectionRefusedError, OSError):
+                    break  # port is free
+
+            if _port_waited >= _port_max_wait:
+                logger.error(
+                    '[%s] Port %d still in use after %.0fs. Set a different port in config.yaml: platforms.api_server.port',
+                    self.name, self._port, _port_max_wait,
+                )
                 return False
-            except (ConnectionRefusedError, OSError):
-                pass  # port is free
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
