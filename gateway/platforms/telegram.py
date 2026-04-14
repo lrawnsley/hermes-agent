@@ -1106,7 +1106,18 @@ class TelegramAdapter(BasePlatformAdapter):
             if thread_id:
                 kwargs["message_thread_id"] = int(thread_id)
 
-            msg = await self._bot.send_message(**kwargs)
+            try:
+                msg = await self._bot.send_message(**kwargs)
+            except Exception as md_error:
+                # Markdown parsing failed — retry as plain text without parse_mode
+                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "entity" in str(md_error).lower():
+                    logger.warning("[%s] send_exec_approval Markdown failed, retrying as plain text: %s", self.name, md_error)
+                    plain_text = _strip_mdv2(text)
+                    kwargs.pop("parse_mode", None)
+                    kwargs["text"] = plain_text
+                    msg = await self._bot.send_message(**kwargs)
+                else:
+                    raise
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
